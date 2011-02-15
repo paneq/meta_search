@@ -2,6 +2,78 @@ require 'helper'
 
 class TestSearch < Test::Unit::TestCase  
 
+  context "A Company search where options[:user] = 'blocked'" do
+    setup do
+      @s = Company.search({}, :user => 'blocked')
+    end
+
+    should "not respond_to? a search against backwards_name" do
+      assert !@s.respond_to?(:backwards_name), "The search responded to :backwards_name"
+    end
+
+    should "raise an error if we try to search on backwards_name" do
+      assert_raise NoMethodError do
+        @s.backwards_name = 'blah'
+      end
+    end
+
+    should "not respond_to? a search against updated_at_eq" do
+      assert !@s.respond_to?(:updated_at_eq), "The search responded to :updated_at_eq"
+    end
+
+    should "raise an error if we try to search on updated_at" do
+      assert_raise NoMethodError do
+        @s.updated_at_eq = 'blah'
+      end
+    end
+
+    should "not respond_to? a search against notes_note_matches" do
+      assert !@s.respond_to?(:notes_note_matches), "The search responded to :notes_note_matches"
+    end
+
+    should "raise an error if we try to search on notes_note_matches" do
+      assert_raise NoMethodError do
+        @s.notes_note_matches = '%blah%'
+      end
+    end
+  end
+
+  context "A Developer search where options[:user] = 'privileged'" do
+    setup do
+      @s = Developer.search({}, :user => 'privileged')
+    end
+
+    should "respond_to? a search against name_eq" do
+      assert_respond_to @s, :name_eq
+    end
+
+    should "not raise an error on a search against name_eq" do
+      assert_nothing_raised do
+        @s.name_eq = 'blah'
+      end
+    end
+
+    should "respond_to? a search against company_name_eq" do
+      assert_respond_to @s, :company_name_eq
+    end
+
+    should "not raise an error on a search against name_eq" do
+      assert_nothing_raised do
+        @s.company_name_eq = 'blah'
+      end
+    end
+
+    should "respond_to? a search against company_updated_at_eq" do
+      assert_respond_to @s, :company_updated_at_eq
+    end
+
+    should "not raise an error on a search against company_updated_at_eq" do
+      assert_nothing_raised do
+        @s.company_updated_at_eq = Time.now
+      end
+    end
+  end
+
   [{:name => 'Company', :object => Company},
    {:name => 'Company as a Relation', :object => Company.scoped}].each do |object|
     context_a_search_against object[:name], object[:object] do
@@ -80,31 +152,63 @@ class TestSearch < Test::Unit::TestCase
         end
       end
 
-      context "sorted by name in ascending order" do
-        setup do
-          @s.meta_sort = 'name.asc'
-        end
-
-        should "sort by name in ascending order" do
-          assert_equal Company.order('name asc').all,
-                       @s.all
+      should "raise an error when MAX_JOIN_DEPTH is exceeded" do
+        assert_raise MetaSearch::JoinDepthError do
+          @s.developers_company_developers_company_developers_name_equals = "Ernie Miller"
         end
       end
 
-      context "sorted by name in descending order" do
+      context "when meta_sort value is empty string" do
         setup do
-          @s.meta_sort = 'name.desc'
+          @s.meta_sort = ''
         end
 
-        should "sort by name in descending order" do
-          assert_equal Company.order('name desc').all,
-                       @s.all
+        should "not raise an error, just ignore sorting" do
+          assert_nothing_raised do
+            assert_equal Company.all, @s.all
+          end
         end
+      end
+
+      should "sort by name in ascending order" do
+        @s.meta_sort = 'name.asc'
+        assert_equal Company.order('name asc').all,
+                     @s.all
+      end
+
+      should "sort by name in ascending order as a method call" do
+        @s.meta_sort 'name.asc'
+        assert_equal Company.order('name asc').all,
+                     @s.all
+      end
+
+      should "sort by name in descending order" do
+        @s.meta_sort = 'name.desc'
+        assert_equal Company.order('name desc').all,
+                     @s.all
       end
 
       context "where name contains optical" do
         setup do
           @s.name_contains = 'optical'
+        end
+
+        should "return one result" do
+          assert_equal 1, @s.all.size
+        end
+
+        should "return a company named Advanced Optical Solutions" do
+          assert_contains @s.all, Company.where(:name => 'Advanced Optical Solutions').first
+        end
+
+        should "not return a company named Initech" do
+          assert_does_not_contain @s.all, Company.where(:name => "Initech").first
+        end
+      end
+
+      context "where name contains optical as a method call" do
+        setup do
+          @s.name_contains 'optical'
         end
 
         should "return one result" do
@@ -211,15 +315,17 @@ class TestSearch < Test::Unit::TestCase
         end
       end
 
-      context "with a join more than five tables deep (including source table)" do
+      context "where backwards name is hcetinI as a method call" do
         setup do
-          @s.developers_company_developers_company_developers_name_equals = "Ernie Miller"
+          @s.backwards_name 'hcetinI'
         end
 
-        should "raise an error when the relation is accessed" do
-          assert_raise MetaSearch::JoinDepthError do
-            @s.all
-          end
+        should "return 1 result" do
+          assert_equal 1, @s.all.size
+        end
+
+        should "return a company named Initech" do
+          assert_contains @s.all, Company.where(:name => 'Initech').first
         end
       end
 
@@ -313,6 +419,17 @@ class TestSearch < Test::Unit::TestCase
         end
       end
 
+      context "sorted by salary and name in descending order" do
+        setup do
+          @s.meta_sort = 'salary_and_name.desc'
+        end
+
+        should "sort by salary and name in descending order" do
+          assert_equal Developer.order('salary DESC, name DESC').all,
+                       @s.all
+        end
+      end
+
       context "where developer is Bob-approved" do
         setup do
           @s.notes_note_equals = "A straight shooter with upper management written all over him."
@@ -320,6 +437,17 @@ class TestSearch < Test::Unit::TestCase
 
         should "return Peter Gibbons" do
           assert_contains @s.all, Developer.where(:name => 'Peter Gibbons').first
+        end
+      end
+
+      context "where name or company name starts with m" do
+        setup do
+          @s.name_or_company_name_starts_with = "m"
+        end
+
+        should "return Michael Bolton and all employees of Mission Data" do
+          assert_equal @s.all, Developer.where(:name => 'Michael Bolton').all +
+                               Company.where(:name => 'Mission Data').first.developers
         end
       end
 
@@ -413,6 +541,24 @@ class TestSearch < Test::Unit::TestCase
 
         should "return no results" do
           assert_equal 0, @s.all.size
+        end
+      end
+
+      context "where developer is named Ernie Miller by polymorphic belongs_to against an association" do
+        setup do
+          @s.notes_notable_developer_type_name_equals = "Ernie Miller"
+        end
+
+        should "return one result" do
+          assert_equal 1, @s.all.size
+        end
+
+        should "return a developer named Ernie Miller" do
+          assert_contains @s.all, Developer.where(:name => 'Ernie Miller').first
+        end
+
+        should "not return a developer named Herb Myers" do
+          assert_does_not_contain @s.all, Developer.where(:name => "Herb Myers").first
         end
       end
     end
@@ -742,6 +888,43 @@ class TestSearch < Test::Unit::TestCase
 
         should "contain no results with a null name column" do
           assert_equal 0, @s.all.select {|r| r.name = nil}.size
+        end
+      end
+
+      context "where notes_id is null" do
+        setup do
+          @s.notes_id_is_null = true
+        end
+
+        should "return 2 results" do
+          assert_equal 2, @s.all.size
+        end
+
+        should "contain no results with notes" do
+          assert_equal 0, @s.all.select {|r| r.notes.size > 0}.size
+        end
+      end
+    end
+  end
+
+  [{:name => 'Note', :object => Note},
+   {:name => 'Note as a Relation', :object => Note.scoped}].each do |object|
+    context_a_search_against object[:name], object[:object] do
+      should "allow search on polymorphic belongs_to associations" do
+        @s.notable_project_type_name_contains = 'MetaSearch'
+        assert_equal Project.find_by_name('MetaSearch Development').notes, @s.all
+      end
+
+      should "allow search on multiple polymorphic belongs_to associations" do
+        @s.notable_project_type_name_or_notable_developer_type_name_starts_with = 'M'
+        assert_equal Project.find_by_name('MetaSearch Development').notes +
+                     Developer.find_by_name('Michael Bolton').notes,
+                     @s.all
+      end
+
+      should "raise an error when attempting to search against polymorphic belongs_to association without a type" do
+        assert_raises ::MetaSearch::PolymorphicAssociationMissingTypeError do
+          @s.notable_name_contains = 'MetaSearch'
         end
       end
     end

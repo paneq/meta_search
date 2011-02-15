@@ -17,7 +17,9 @@ In your controller:
 
   def index
     @search = Article.search(params[:search])
-    @articles = @search.all   # or @search.relation to lazy load in view
+    @articles = @search.all   # load all matching records
+    # @articles = @search.relation # Retrieve the relation, to lazy-load in view
+    # @articles = @search.paginate(:page => params[:page]) # Who doesn't love will_paginate?
   end
 
 In your view:
@@ -31,7 +33,72 @@ In your view:
     <%= f.submit %>
   <% end %>
 
-The default Where types are listed at MetaSearch::Where. Options for the search method are documented at MetaSearch::Searches::Base.
+Options for the search method are documented at MetaSearch::Searches::ActiveRecord.
+
+== "Wheres", and what they're good for
+
+Wheres are how MetaSearch does its magic. Wheres have a name (and possible aliases) which are
+appended to your model and association attributes. When you instantiate a MetaSearch::Builder
+against a model (manually or by calling your model's +search+ method) the builder responds to
+methods named for your model's attributes and associations, suffixed by the name of the Where.
+
+These are the default Wheres, broken down by the types of ActiveRecord columns they can search
+against:
+
+=== All data types
+
+* _equals_ (alias: _eq_) - Just as it sounds.
+* _does_not_equal_ (aliases: _ne_, _noteq_) - The opposite of equals, oddly enough.
+* _in_ - Takes an array, matches on equality with any of the items in the array.
+* _not_in_ (aliases: _ni_, _notin_) - Like above, but negated.
+* _is_null_ - The column has an SQL NULL value.
+* _is_not_null_ - The column contains anything but NULL.
+
+=== Strings
+
+* _contains_ (aliases: _like_, _matches_) - Substring match.
+* _does_not_contain_ (aliases: _nlike_, _nmatches_) - Negative substring match.
+* _starts_with_ (alias: _sw_) - Match strings beginning with the entered term.
+* _does_not_start_with_ (alias: _dnsw_) - The opposite of above.
+* _ends_with_ (alias: _ew_) - Match strings ending with the entered term.
+* _does_not_end_with_ (alias: _dnew_) - Negative of above.
+
+=== Numbers, dates, and times
+
+* _greater_than_ (alias: _gt_) - Greater than.
+* _greater_than_or_equal_to_ (aliases: _gte_, _gteq_) - Greater than or equal to.
+* _less_than_ (alias: _lt_) - Less than.
+* _less_than_or_equal_to_ (aliases: _lte_, _lteq_) - Less than or equal to.
+
+=== Booleans
+
+* _is_true_ - Is true. Useful for a checkbox like "only show admin users".
+* _is_false_ - The complement of _is_true_.
+
+=== Non-boolean data types
+
+* _is_present_ - As with _is_true_, useful with a checkbox. Not NULL or the empty string.
+* _is_blank_ - Returns records with a value of NULL or the empty string in the column.
+
+So, given a model like this...
+
+  class Article < ActiveRecord::Base
+    belongs_to :author
+    has_many :comments
+    has_many :moderations, :through => :comments
+  end
+
+...you might end up with attributes like <tt>title_contains</tt>,
+<tt>comments_title_starts_with</tt>, <tt>moderations_value_less_than</tt>,
+<tt>author_name_equals</tt>, and so on.
+
+Additionally, all of the above predicate types also have an _any and _all version, which
+expects an array of the corresponding parameter type, and requires any or all of the
+parameters to be a match, respectively. So:
+
+  Article.search :author_name_starts_with_any => ['Jim', 'Bob', 'Fred']
+
+will match articles authored by Jimmy, Bobby, or Freddy, but not Winifred.
 
 == Advanced usage
 
@@ -48,10 +115,36 @@ Or, you can build up any relation you like and call the search method on that ob
   @projects_with_awesome_users_search =
     Project.joins(:user).where(:users => {:awesome => true}).search(params[:search])
 
+=== ORed conditions
+
+If you'd like to match on one of several possible columns, you can do this:
+
+  <%= f.text_field :title_or_description_contains %>
+  <%= f.text_field :title_or_author_name_starts_with %>
+
+Caveats:
+
+* Only one match type is supported. You <b>can't</b> do
+  <tt>title_matches_or_description_starts_with</tt> for instance.
+* If you're matching across associations, remember that the associated table will be
+  INNER JOINed, therefore limiting results to those that at least have a corresponding
+  record in the associated table.
+
+=== Compound conditions (any/all)
+
+All Where types automatically get an "any" and "all" variant. This has the same name and
+aliases as the original, but is suffixed with _any and _all, for an "OR" or "AND" search,
+respectively. So, if you want to provide the user with 5 different search boxes to enter
+possible article titles:
+
+  <%= f.multiparameter_field :title_contains_any,
+        *5.times.inject([]) {|a, b| a << {:field_type => :text_field}} +
+        [:size => 10] %>
+
 === Multi-level associations
 
-MetaSearch will allow you traverse your associations in one form, generating the necessary
-joins along the way. If you have the following models...
+MetaSearch will allow you to traverse your associations in one form, generating the
+necessary joins along the way. If you have the following models...
 
   class Company < ActiveRecord::Base
     has_many :developers
@@ -64,21 +157,57 @@ joins along the way. If you have the following models...
 
 ...you can do this in your form to search your companies by developers with certain notes:
 
-  <%= f.text_field :developers_notes_note %>
+  <%= f.text_field :developers_notes_note_contains %>
 
 You can travel forward and back through the associations, so this would also work (though
 be entirely pointless in this case):
 
-  <%= f.text_field :developers_notes_developer_company_name %>
+  <%= f.text_field :developers_notes_developer_company_name_contains %>
 
 However, to prevent abuse, this is limited to associations of a total "depth" of 5 levels.
 This means that while starting from a Company model, as above, you could do
 Company -> :developers -> :notes -> :developer -> :company, which has gotten you right
 back where you started, but "travels" through 5 models total.
 
+In the case of polymorphic belongs_to associations, things work a bit differently. Let's say
+you have the following models:
+
+  class Article < ActiveRecord::Base
+    has_many :comments, :as => :commentable
+  end
+
+  class Post < ActiveRecord::Base
+    has_many :comments, :as => :commentable
+  end
+
+  class Comment < ActiveRecord::Base
+    belongs_to :commentable, :polymorphic => true
+    validates_presence_of :body
+  end
+
+Your first instinct might be to set up a text field for :commentable_body_contains, but
+you can't do this. MetaSearch would have no way to know which class lies on the other side
+of the polymorphic association, so it wouldn't be able to join the correct tables.
+
+Instead, you'll follow a convention Searchlogic users are already familiar with, using the
+name of the polymorphic association, then the underscored class name (AwesomeClass becomes
+awesome_class), then the delimiter "type", to tell MetaSearch anything that follows is an
+attribute name. For example:
+
+  <%= f.text_field :commentable_article_type_body_contains %>
+
+If you'd like to match on multiple types of polymorphic associations, you can join them
+with \_or_, just like any other conditions:
+
+  <%= f.text_field :commentable_article_type_body_or_commentable_post_type_body_contains %>
+
+It's not pretty, but it works. Alternately, consider creating a custom search method as
+described below to save yourself some typing if you're creating a lot of these types of
+search fields.
+
 === Adding a new Where
 
-If none of the built-in search criteria work for you, you can add a new Where (or 5). To do so,
+If none of the built-in search criteria work for you, you can add new Wheres. To do so,
 create an initializer (<tt>/config/initializers/meta_search.rb</tt>, for instance) and add lines
 like:
 
@@ -144,23 +273,12 @@ MetaSearch adds a helper for this:
 lets you sandwich a list of fields, each in hash format, between the attribute and the usual
 options hash. See MetaSearch::Helpers::FormBuilder for more info.
 
-=== Compound conditions (any/all)
-
-All Where types automatically get an "any" and "all" variant. This has the same name and
-aliases as the original, but is suffixed with _any and _all, for an "OR" or "AND" search,
-respectively. So, if you want to provide the user with 5 different search boxes to enter
-possible article titles:
-
-  <%= f.multiparameter_field :title_contains_any,
-        *5.times.inject([]) {|a, b| a << {:field_type => :text_field}} +
-        [:size => 10] %>
-
-=== check_boxes and collection_check_boxes
+=== checks and collection_checks
 
 If you need to get an array into your where, and you don't care about parameter order,
 you might choose to use a select or collection_select with multiple selection enabled,
 but everyone hates multiple selection boxes. MetaSearch adds a couple of additional
-helpers, +check_boxes+ and +collection_check_boxes+ to handle multiple selections in a
+helpers, +checks+ and +collection_checks+ to handle multiple selections in a
 more visually appealing manner. They can be called with or without a block. Without a
 block, you get an array of MetaSearch::Check objects to do with as you please.
 
@@ -168,7 +286,7 @@ With a block, each check is yielded to your template, like so:
 
   <h4>How many heads?</h4>
   <ul>
-    <% f.check_boxes :number_of_heads_in,
+    <% f.checks :number_of_heads_in,
       [['One', 1], ['Two', 2], ['Three', 3]], :class => 'checkboxy' do |check| %>
       <li>
         <%= check.box %>
@@ -191,18 +309,32 @@ Normally, you won't supply this parameter yourself, but instead will use the hel
 <tt>sort_link</tt> in your views, like so:
 
   <%= sort_link @search, :title %>
-  <%= sort_link @search, :created_at %>
+
+Or, if in the context of a form_for against a MetaSearch::Builder:
+
+  <%= f.sort_link :title %>
 
 The <tt>@search</tt> object is the instance of MetaSearch::Builder you got back earlier from
 your controller. The other required parameter is the attribute name itself. Optionally,
 you can provide a string as a 3rd parameter to override the default link name, and then
 additional hashed for the +options+ and +html_options+ hashes for link_to.
 
+You can sort by more than one column as well, by creating a link like:
+
+  <%= sort_link :name_and_salary %>
+
+If you'd like to do a custom sort, you can do so by setting up two scopes in your model:
+
+  scope :sort_by_custom_name_asc, order('custom_name ASC')
+  scope :sort_by_custom_name_desc, order('custom_name DESC')
+
+You can then do <tt>sort_link @search, :custom_name</tt> and it will work as you expect.
+
 All <tt>sort_link</tt>-generated links will have the CSS class sort_link, as well as a
 directional class (ascending or descending) if the link is for a currently sorted column,
 for your styling enjoyment.
 
-This feature should hopefully help out those of you migrating from SearchLogic, and a thanks
+This feature should hopefully help out those of you migrating from Searchlogic, and a thanks
 goes out to Ben Johnson for the HTML entities used for the up and down arrows, which provide
 a nice default look.
 
@@ -230,6 +362,50 @@ Excluded attributes on a model will be honored across associations, so if an Art
 
 Then your call to <tt>Article.search</tt> will allow <tt>:comments_body_contains</tt>
 but not <tt>:comments_user_id_equals</tt> to be passed.
+
+=== Conditional access to searches
+
+<tt>search_methods</tt>, <tt>attr_searchable</tt>, <tt>attr_unsearchable</tt>,
+<tt>assoc_searchable</tt>, and <tt>assoc_unsearchable</tt> all accept an <tt>:if</tt>
+option. If present, it should specify a Proc (or other object responding to <tt>call</tt>)
+that accepts a single parameter. This parameter will be the instance of the MetaSearch::Builder
+that gets created by a call to Model.search. Any unused search options (the second hash param)
+that get passed to Model.search will be available via the Builder object's <tt>options</tt>
+reader, and can be used for access control via this proc/object.
+
+Example:
+
+  assoc_unsearchable :notes,
+                     :if => proc {|s| s.options[:access] == 'blocked' || !s.options[:access]}
+
+=== Localization
+
+MetaSearch supports i18n localization in a few different ways. Consider this abbreviated
+example "flanders" locale:
+
+  flanders:
+    activerecord:
+      attributes:
+        company:
+          name: "Company name-diddly"
+        developer:
+          name: "Developer name-diddly"
+          salary: "Developer salary-doodly"
+    meta_search:
+      or: 'or-diddly'
+      predicates:
+        contains: "%{attribute} contains-diddly"
+        equals: "%{attribute} equals-diddly"
+      attributes:
+        company:
+          reverse_name: "Company reverse name-diddly"
+        developer:
+          name_contains: "Developer name-diddly contains-aroonie"
+
+First, MetaSearch will use a key found under meta_search.attributes.model_name.attribute_name,
+if it exists. As a fallback, it will use a localization based on the predicate type, along with
+the usual ActiveRecord attribute localization (the activerecord.attributes.model_name keys above).
+Additionally, a localized "or" can be specified for multi-column searches.
 
 == Contributions
 

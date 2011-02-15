@@ -15,6 +15,8 @@ module MetaSearch
   # * _does_not_equal_ (aliases: _ne_, _noteq_) - The opposite of equals, oddly enough.
   # * _in_ - Takes an array, matches on equality with any of the items in the array.
   # * _not_in_ (aliases: _ni_, _notin_) - Like above, but negated.
+  # * _is_null_ - The column has an SQL NULL value.
+  # * _is_not_null_ - The column contains anything but NULL.
   #
   # === Strings
   #
@@ -97,12 +99,14 @@ module MetaSearch
     end
 
     # Evaluate the Where for the given relation, attribute, and parameter(s)
-    def eval(relation, attribute, param)
+    def evaluate(relation, attributes, param)
       if splat_param?
-        relation.where(attribute.send(predicate, *format_param(param)))
+        conditions = attributes.map {|a| a.send(predicate, *format_param(param))}
       else
-        relation.where(attribute.send(predicate, format_param(param)))
+        conditions = attributes.map {|a| a.send(predicate, format_param(param))}
       end
+
+      relation.where(conditions.inject(nil) {|memo, c| memo ? memo.or(c) : c})
     end
 
     class << self
@@ -241,7 +245,6 @@ module MetaSearch
           create_where_from_args(*args + [{
             :types => where.types,
             :predicate => "#{where.predicate}_#{compound}".to_sym,
-            :splat_param => true,
             # Only use valid elements in the array
             :formatter => Proc.new {|param|
               param.select {|p| where.validator.call(p)}.map {|p| where.formatter.call(p)}
